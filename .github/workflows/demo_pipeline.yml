@@ -51,31 +51,12 @@ jobs:
             echo "##[endgroup]"
           } | tee /tmp/ci_logs/01_env.log
 
-          echo "Reporting Checkpoint 25% to ${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs..."
-          python3 -c "
-import json, urllib.request, os
-url = '${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs'
-with open('/tmp/ci_logs/01_env.log', 'r', encoding='utf-8', errors='replace') as f:
-    content = f.read()
-payload = {
-    'log_chunk': content,
-    'step_name': 'Runner Environment Initialization',
-    'stage': 'setup',
-    'is_final': False,
-    'exit_code': 0,
-    'ci_run_id': '${GHA_RUN_ID}',
-    'depth': 25
-}
-headers = {'Content-Type': 'application/json'}
-if '${API_KEY}':
-    headers['X-API-Key'] = '${API_KEY}'
-req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-try:
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        print('HTTP Status:', resp.status)
-except Exception as e:
-    print('Delivery warning:', e)
-"
+          python3 scripts/report_checkpoint.py \
+            --depth 25 \
+            --step-name "Runner Environment Initialization" \
+            --stage "setup" \
+            --exit-code 0 \
+            --log-file /tmp/ci_logs/01_env.log
 
       - name: 4. Install Dependencies
         id: install_step
@@ -101,37 +82,13 @@ except Exception as e:
           STEP_OUTCOME: ${{ steps.install_step.outcome }}
         run: |
           EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
-          python3 -c "
-import json, urllib.request, os
-url = '${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs'
-log_file = '/tmp/ci_logs/02_install.log'
-content = ''
-if os.path.exists(log_file):
-    with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
-        content = f.read()
-if not content.strip():
-    content = '=== Stage: Dependency Installation ===
-Outcome: ${STEP_OUTCOME}
-'
-payload = {
-    'log_chunk': content,
-    'step_name': 'Install Dependencies',
-    'stage': 'build',
-    'is_final': False,
-    'exit_code': int('${EXIT_CODE}'),
-    'ci_run_id': '${GHA_RUN_ID}',
-    'depth': 50
-}
-headers = {'Content-Type': 'application/json'}
-if '${API_KEY}':
-    headers['X-API-Key'] = '${API_KEY}'
-req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-try:
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        print('HTTP Status:', resp.status)
-except Exception as e:
-    print('Delivery warning:', e)
-"
+          python3 scripts/report_checkpoint.py \
+            --depth 50 \
+            --step-name "Install Dependencies" \
+            --stage "build" \
+            --exit-code "$EXIT_CODE" \
+            --log-file /tmp/ci_logs/02_install.log \
+            --fallback-msg "=== Stage: Dependency Installation === Outcome: ${STEP_OUTCOME}"
 
       - name: 6. Validate Environment & Package Syntax
         id: syntax_check
@@ -153,37 +110,13 @@ except Exception as e:
           STEP_OUTCOME: ${{ steps.syntax_check.outcome }}
         run: |
           EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
-          python3 -c "
-import json, urllib.request, os
-url = '${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs'
-log_file = '/tmp/ci_logs/03_syntax.log'
-content = ''
-if os.path.exists(log_file):
-    with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
-        content = f.read()
-if not content.strip():
-    content = '=== Stage: Static Validation ===
-Outcome: ${STEP_OUTCOME}
-'
-payload = {
-    'log_chunk': content,
-    'step_name': 'Validate Environment',
-    'stage': 'build',
-    'is_final': False,
-    'exit_code': int('${EXIT_CODE}'),
-    'ci_run_id': '${GHA_RUN_ID}',
-    'depth': 75
-}
-headers = {'Content-Type': 'application/json'}
-if '${API_KEY}':
-    headers['X-API-Key'] = '${API_KEY}'
-req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-try:
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        print('HTTP Status:', resp.status)
-except Exception as e:
-    print('Delivery warning:', e)
-"
+          python3 scripts/report_checkpoint.py \
+            --depth 75 \
+            --step-name "Validate Environment" \
+            --stage "build" \
+            --exit-code "$EXIT_CODE" \
+            --log-file /tmp/ci_logs/03_syntax.log \
+            --fallback-msg "=== Stage: Static Validation === Outcome: ${STEP_OUTCOME}"
 
       - name: 8. Execute Pytest Test Suite
         id: run_tests
@@ -204,33 +137,11 @@ except Exception as e:
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
         run: |
           EXIT_CODE=$([ "$TEST_OUTCOME" = "success" ] && echo 0 || echo 1)
-          python3 -c "
-import json, urllib.request, os
-url = '${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs'
-log_file = '/tmp/ci_logs/04_pytest.log'
-content = ''
-if os.path.exists(log_file):
-    with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
-        content = f.read()
-if not content.strip():
-    content = 'Pytest execution completed with exit code ${EXIT_CODE}
-'
-payload = {
-    'log_chunk': content,
-    'step_name': 'Run Test Suite',
-    'stage': 'test',
-    'is_final': True,
-    'exit_code': int('${EXIT_CODE}'),
-    'ci_run_id': '${GHA_RUN_ID}',
-    'depth': 100
-}
-headers = {'Content-Type': 'application/json'}
-if '${API_KEY}':
-    headers['X-API-Key'] = '${API_KEY}'
-req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-try:
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        print('HTTP Status:', resp.status)
-except Exception as e:
-    print('Delivery warning:', e)
-"
+          python3 scripts/report_checkpoint.py \
+            --depth 100 \
+            --step-name "Run Test Suite" \
+            --stage "test" \
+            --exit-code "$EXIT_CODE" \
+            --is-final \
+            --log-file /tmp/ci_logs/04_pytest.log \
+            --fallback-msg "Pytest execution completed with exit code ${EXIT_CODE}"
