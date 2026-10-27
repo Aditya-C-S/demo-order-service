@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 3. Stream Checkpoint 25% (Runner Initialization)
+      - name: 3. Capture & Stream Checkpoint 25% (Runner Environment Initialization)
         if: always()
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
@@ -38,26 +38,60 @@ jobs:
           API_KEY: ${{ secrets.DEMO_API_KEY }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
-          LOG_CONTENT="##[group]Runner Environment Initialization\nOS: Ubuntu 22.04 LTS\nCommit: ${COMMIT_SHA}\nRunner: GitHub Actions Ubuntu Latest\nPython: 3.12 initialized\n##[endgroup]"
+          mkdir -p /tmp/ci_logs
+          {
+            echo "##[group]Runner Environment Initialization"
+            echo "OS: $(uname -srmo 2>/dev/null || echo 'Ubuntu Linux')"
+            echo "Runner Kernel: $(uname -v 2>/dev/null || echo 'Linux')"
+            echo "Python Path: $(which python3 || echo '/usr/bin/python3')"
+            echo "Python Version: $(python3 --version 2>&1)"
+            echo "Git Version: $(git --version 2>&1)"
+            echo "Commit: ${COMMIT_SHA}"
+            echo "Commit Summary: $(git log -1 --oneline 2>/dev/null || echo 'Demo commit')"
+            echo "##[endgroup]"
+          } | tee /tmp/ci_logs/01_env.log
+
           echo "Reporting Checkpoint 25% to ${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs..."
-          HTTP_STATUS=$(curl -s -o /tmp/resp_25.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: ${API_KEY}" \
-            -d "{\"log_chunk\": \"${LOG_CONTENT}\", \"step_name\": \"Runner Initialization\", \"stage\": \"setup\", \"is_final\": false, \"exit_code\": 0, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 25}" || echo "FAILED")
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "::warning title=Dashboard Ingestion Warning::Backend unreachable or returned HTTP ${HTTP_STATUS} at 25% checkpoint."
-            echo "- ⚠️ 25% Checkpoint could not be delivered to Dashboard (HTTP: ${HTTP_STATUS})" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- ✅ 25% Checkpoint successfully ingested by Dashboard" >> $GITHUB_STEP_SUMMARY
-          fi
+          python3 -c "
+import json, urllib.request, os
+url = '${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs'
+with open('/tmp/ci_logs/01_env.log', 'r', encoding='utf-8', errors='replace') as f:
+    content = f.read()
+payload = {
+    'log_chunk': content,
+    'step_name': 'Runner Environment Initialization',
+    'stage': 'setup',
+    'is_final': False,
+    'exit_code': 0,
+    'ci_run_id': '${GHA_RUN_ID}',
+    'depth': 25
+}
+headers = {'Content-Type': 'application/json'}
+if '${API_KEY}':
+    headers['X-API-Key'] = '${API_KEY}'
+req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        print('HTTP Status:', resp.status)
+except Exception as e:
+    print('Delivery warning:', e)
+"
 
       - name: 4. Install Dependencies
         id: install_step
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          mkdir -p /tmp/ci_logs
+          {
+            echo "=== Stage: Dependency Installation & Package Resolution ==="
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+            echo "Installed packages summary:"
+            pip list --format=freeze | grep -E 'pytest|pydantic|requests|fastapi' || pip list --format=freeze | head -n 10
+            echo "Process completed successfully."
+          } 2>&1 | tee /tmp/ci_logs/02_install.log
+          exit ${PIPESTATUS[0]}
 
-      - name: 5. Stream Checkpoint 50% (Dependency Installation)
+      - name: 5. Stream Checkpoint 50% (Dependency Resolution Logs)
         if: always()
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
@@ -67,24 +101,49 @@ jobs:
           STEP_OUTCOME: ${{ steps.install_step.outcome }}
         run: |
           EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
-          LOG_CONTENT="=== Stage: Build & Dependency Resolution ===\nOutcome: ${STEP_OUTCOME}\nExit Code: ${EXIT_CODE}\nInstalled: $(pip list --format=freeze | grep -E 'pytest')\n"
-          HTTP_STATUS=$(curl -s -o /tmp/resp_50.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: ${API_KEY}" \
-            -d "{\"log_chunk\": \"${LOG_CONTENT}\", \"step_name\": \"Install Dependencies\", \"stage\": \"build\", \"is_final\": false, \"exit_code\": ${EXIT_CODE}, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 50}" || echo "FAILED")
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "::warning title=Dashboard Ingestion Warning::Backend unreachable at 50% checkpoint (HTTP ${HTTP_STATUS})."
-            echo "- ⚠️ 50% Checkpoint delivery failed (HTTP: ${HTTP_STATUS})" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- ✅ 50% Checkpoint successfully ingested by Dashboard" >> $GITHUB_STEP_SUMMARY
-          fi
+          python3 -c "
+import json, urllib.request, os
+url = '${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs'
+log_file = '/tmp/ci_logs/02_install.log'
+content = ''
+if os.path.exists(log_file):
+    with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read()
+if not content.strip():
+    content = '=== Stage: Dependency Installation ===
+Outcome: ${STEP_OUTCOME}
+'
+payload = {
+    'log_chunk': content,
+    'step_name': 'Install Dependencies',
+    'stage': 'build',
+    'is_final': False,
+    'exit_code': int('${EXIT_CODE}'),
+    'ci_run_id': '${GHA_RUN_ID}',
+    'depth': 50
+}
+headers = {'Content-Type': 'application/json'}
+if '${API_KEY}':
+    headers['X-API-Key'] = '${API_KEY}'
+req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        print('HTTP Status:', resp.status)
+except Exception as e:
+    print('Delivery warning:', e)
+"
 
       - name: 6. Validate Environment & Package Syntax
         id: syntax_check
         run: |
-          python -c "import src.config, src.exceptions, src.validator, src.processor, src.order_service; print('All modules loaded successfully.')"
+          mkdir -p /tmp/ci_logs
+          {
+            echo "=== Stage: Environment & Static Validation ==="
+            python -c "import src.config, src.exceptions, src.validator, src.processor, src.order_service; print('All core modules imported and syntax verified successfully.')"
+          } 2>&1 | tee /tmp/ci_logs/03_syntax.log
+          exit ${PIPESTATUS[0]}
 
-      - name: 7. Stream Checkpoint 75% (Pre-Test Environment Check)
+      - name: 7. Stream Checkpoint 75% (Static Validation Logs)
         if: always()
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
@@ -94,24 +153,45 @@ jobs:
           STEP_OUTCOME: ${{ steps.syntax_check.outcome }}
         run: |
           EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
-          LOG_CONTENT="=== Stage: Environment & Static Validation ===\nSyntax Verification: ${STEP_OUTCOME}\nModules: src.config, src.validator, src.processor, src.order_service\n"
-          HTTP_STATUS=$(curl -s -o /tmp/resp_75.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: ${API_KEY}" \
-            -d "{\"log_chunk\": \"${LOG_CONTENT}\", \"step_name\": \"Validate Environment\", \"stage\": \"build\", \"is_final\": false, \"exit_code\": ${EXIT_CODE}, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 75}" || echo "FAILED")
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "::warning title=Dashboard Ingestion Warning::Backend unreachable at 75% checkpoint (HTTP ${HTTP_STATUS})."
-            echo "- ⚠️ 75% Checkpoint delivery failed (HTTP: ${HTTP_STATUS})" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- ✅ 75% Checkpoint successfully ingested by Dashboard" >> $GITHUB_STEP_SUMMARY
-          fi
+          python3 -c "
+import json, urllib.request, os
+url = '${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs'
+log_file = '/tmp/ci_logs/03_syntax.log'
+content = ''
+if os.path.exists(log_file):
+    with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read()
+if not content.strip():
+    content = '=== Stage: Static Validation ===
+Outcome: ${STEP_OUTCOME}
+'
+payload = {
+    'log_chunk': content,
+    'step_name': 'Validate Environment',
+    'stage': 'build',
+    'is_final': False,
+    'exit_code': int('${EXIT_CODE}'),
+    'ci_run_id': '${GHA_RUN_ID}',
+    'depth': 75
+}
+headers = {'Content-Type': 'application/json'}
+if '${API_KEY}':
+    headers['X-API-Key'] = '${API_KEY}'
+req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        print('HTTP Status:', resp.status)
+except Exception as e:
+    print('Delivery warning:', e)
+"
 
       - name: 8. Execute Pytest Test Suite
         id: run_tests
         env:
           INJECT_DEMO_FAILURE: ${{ inputs.inject_failure || '0' }}
         run: |
-          pytest tests/ -v --tb=short 2>&1 | tee /tmp/pytest_run.log
+          mkdir -p /tmp/ci_logs
+          pytest tests/ -v --tb=short 2>&1 | tee /tmp/ci_logs/04_pytest.log
           exit ${PIPESTATUS[0]}
 
       - name: 9. Stream Checkpoint 100% Final & Trigger Parser V2 / RCA
@@ -124,20 +204,33 @@ jobs:
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
         run: |
           EXIT_CODE=$([ "$TEST_OUTCOME" = "success" ] && echo 0 || echo 1)
-          PYTEST_OUTPUT=$(cat /tmp/pytest_run.log 2>/dev/null || echo "No test output captured.")
-          # Escape newlines and quotes for JSON safety
-          ESCAPED_LOG=$(python3 -c "import json, sys; print(json.dumps(sys.stdin.read()))" <<< "$PYTEST_OUTPUT")
-          
-          PAYLOAD="{\"log_chunk\": ${ESCAPED_LOG}, \"step_name\": \"Run Test Suite\", \"stage\": \"test\", \"is_final\": true, \"exit_code\": ${EXIT_CODE}, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 100}"
-          
-          HTTP_STATUS=$(curl -s -o /tmp/resp_100.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: ${API_KEY}" \
-            -d "${PAYLOAD}" || echo "FAILED")
-
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "::warning title=Dashboard Ingestion Warning::Final 100% checkpoint delivery failed (HTTP ${HTTP_STATUS})."
-            echo "- ⚠️ Final 100% Checkpoint delivery failed (HTTP: ${HTTP_STATUS})" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- ✅ Final 100% Checkpoint delivered. Parser V2 and RCA evaluated by backend." >> $GITHUB_STEP_SUMMARY
-          fi
+          python3 -c "
+import json, urllib.request, os
+url = '${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs'
+log_file = '/tmp/ci_logs/04_pytest.log'
+content = ''
+if os.path.exists(log_file):
+    with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read()
+if not content.strip():
+    content = 'Pytest execution completed with exit code ${EXIT_CODE}
+'
+payload = {
+    'log_chunk': content,
+    'step_name': 'Run Test Suite',
+    'stage': 'test',
+    'is_final': True,
+    'exit_code': int('${EXIT_CODE}'),
+    'ci_run_id': '${GHA_RUN_ID}',
+    'depth': 100
+}
+headers = {'Content-Type': 'application/json'}
+if '${API_KEY}':
+    headers['X-API-Key'] = '${API_KEY}'
+req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        print('HTTP Status:', resp.status)
+except Exception as e:
+    print('Delivery warning:', e)
+"
