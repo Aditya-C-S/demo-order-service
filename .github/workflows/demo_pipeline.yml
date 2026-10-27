@@ -1,0 +1,135 @@
+name: Demo Order Service CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, demo, feature/** ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      demo_run_id:
+        description: 'Active Demo Run ID from CI/CD Predictor Dashboard'
+        required: false
+        default: 'demo_run_manual'
+      inject_failure:
+        description: 'Inject controlled validation failure (1=yes, 0=no)'
+        required: false
+        default: '0'
+
+jobs:
+  test-and-predict:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 3. Stream Checkpoint 25% (Runner Initialization)
+        if: always()
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
+          DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
+          GHA_RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          LOG_CONTENT="##[group]Runner Environment Initialization\nOS: Ubuntu 22.04 LTS\nCommit: ${COMMIT_SHA}\nRunner: GitHub Actions Ubuntu Latest\nPython: 3.12 initialized\n##[endgroup]"
+          echo "Reporting Checkpoint 25% to ${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs..."
+          HTTP_STATUS=$(curl -s -o /tmp/resp_25.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
+            -H "Content-Type: application/json" \
+            -d "{\"log_chunk\": \"${LOG_CONTENT}\", \"step_name\": \"Runner Initialization\", \"stage\": \"setup\", \"is_final\": false, \"exit_code\": 0, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 25}" || echo "FAILED")
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "::warning title=Dashboard Ingestion Warning::Backend unreachable or returned HTTP ${HTTP_STATUS} at 25% checkpoint."
+            echo "- ⚠️ 25% Checkpoint could not be delivered to Dashboard (HTTP: ${HTTP_STATUS})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ✅ 25% Checkpoint successfully ingested by Dashboard" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 4. Install Dependencies
+        id: install_step
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 5. Stream Checkpoint 50% (Dependency Installation)
+        if: always()
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
+          DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
+          GHA_RUN_ID: ${{ github.run_id }}
+          STEP_OUTCOME: ${{ steps.install_step.outcome }}
+        run: |
+          EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
+          LOG_CONTENT="=== Stage: Build & Dependency Resolution ===\nOutcome: ${STEP_OUTCOME}\nExit Code: ${EXIT_CODE}\nInstalled: $(pip list --format=freeze | grep -E 'pytest')\n"
+          HTTP_STATUS=$(curl -s -o /tmp/resp_50.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
+            -H "Content-Type: application/json" \
+            -d "{\"log_chunk\": \"${LOG_CONTENT}\", \"step_name\": \"Install Dependencies\", \"stage\": \"build\", \"is_final\": false, \"exit_code\": ${EXIT_CODE}, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 50}" || echo "FAILED")
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "::warning title=Dashboard Ingestion Warning::Backend unreachable at 50% checkpoint (HTTP ${HTTP_STATUS})."
+            echo "- ⚠️ 50% Checkpoint delivery failed (HTTP: ${HTTP_STATUS})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ✅ 50% Checkpoint successfully ingested by Dashboard" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 6. Validate Environment & Package Syntax
+        id: syntax_check
+        run: |
+          python -c "import src.config, src.exceptions, src.validator, src.processor, src.order_service; print('All modules loaded successfully.')"
+
+      - name: 7. Stream Checkpoint 75% (Pre-Test Environment Check)
+        if: always()
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
+          DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
+          GHA_RUN_ID: ${{ github.run_id }}
+          STEP_OUTCOME: ${{ steps.syntax_check.outcome }}
+        run: |
+          EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
+          LOG_CONTENT="=== Stage: Environment & Static Validation ===\nSyntax Verification: ${STEP_OUTCOME}\nModules: src.config, src.validator, src.processor, src.order_service\n"
+          HTTP_STATUS=$(curl -s -o /tmp/resp_75.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
+            -H "Content-Type: application/json" \
+            -d "{\"log_chunk\": \"${LOG_CONTENT}\", \"step_name\": \"Validate Environment\", \"stage\": \"build\", \"is_final\": false, \"exit_code\": ${EXIT_CODE}, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 75}" || echo "FAILED")
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "::warning title=Dashboard Ingestion Warning::Backend unreachable at 75% checkpoint (HTTP ${HTTP_STATUS})."
+            echo "- ⚠️ 75% Checkpoint delivery failed (HTTP: ${HTTP_STATUS})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ✅ 75% Checkpoint successfully ingested by Dashboard" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 8. Execute Pytest Test Suite
+        id: run_tests
+        env:
+          INJECT_DEMO_FAILURE: ${{ inputs.inject_failure || '0' }}
+        run: |
+          pytest tests/ -v --tb=short 2>&1 | tee /tmp/pytest_run.log
+          exit ${PIPESTATUS[0]}
+
+      - name: 9. Stream Checkpoint 100% Final & Trigger Parser V2 / RCA
+        if: always()
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
+          DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
+          GHA_RUN_ID: ${{ github.run_id }}
+          TEST_OUTCOME: ${{ steps.run_tests.outcome }}
+        run: |
+          EXIT_CODE=$([ "$TEST_OUTCOME" = "success" ] && echo 0 || echo 1)
+          PYTEST_OUTPUT=$(cat /tmp/pytest_run.log 2>/dev/null || echo "No test output captured.")
+          # Escape newlines and quotes for JSON safety
+          ESCAPED_LOG=$(python3 -c "import json, sys; print(json.dumps(sys.stdin.read()))" <<< "$PYTEST_OUTPUT")
+          
+          PAYLOAD="{\"log_chunk\": ${ESCAPED_LOG}, \"step_name\": \"Run Test Suite\", \"stage\": \"test\", \"is_final\": true, \"exit_code\": ${EXIT_CODE}, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 100}"
+          
+          HTTP_STATUS=$(curl -s -o /tmp/resp_100.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" || echo "FAILED")
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "::warning title=Dashboard Ingestion Warning::Final 100% checkpoint delivery failed (HTTP ${HTTP_STATUS})."
+            echo "- ⚠️ Final 100% Checkpoint delivery failed (HTTP: ${HTTP_STATUS})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ✅ Final 100% Checkpoint delivered. Parser V2 and RCA evaluated by backend." >> $GITHUB_STEP_SUMMARY
+          fi
