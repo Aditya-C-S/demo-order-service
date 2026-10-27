@@ -35,12 +35,14 @@ jobs:
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
           DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
           GHA_RUN_ID: ${{ github.run_id }}
+          API_KEY: ${{ secrets.DEMO_API_KEY }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
           LOG_CONTENT="##[group]Runner Environment Initialization\nOS: Ubuntu 22.04 LTS\nCommit: ${COMMIT_SHA}\nRunner: GitHub Actions Ubuntu Latest\nPython: 3.12 initialized\n##[endgroup]"
           echo "Reporting Checkpoint 25% to ${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs..."
           HTTP_STATUS=$(curl -s -o /tmp/resp_25.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
             -H "Content-Type: application/json" \
+            -H "X-API-Key: ${API_KEY}" \
             -d "{\"log_chunk\": \"${LOG_CONTENT}\", \"step_name\": \"Runner Initialization\", \"stage\": \"setup\", \"is_final\": false, \"exit_code\": 0, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 25}" || echo "FAILED")
           if [ "$HTTP_STATUS" != "200" ]; then
             echo "::warning title=Dashboard Ingestion Warning::Backend unreachable or returned HTTP ${HTTP_STATUS} at 25% checkpoint."
@@ -61,12 +63,14 @@ jobs:
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
           DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
           GHA_RUN_ID: ${{ github.run_id }}
+          API_KEY: ${{ secrets.DEMO_API_KEY }}
           STEP_OUTCOME: ${{ steps.install_step.outcome }}
         run: |
           EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
           LOG_CONTENT="=== Stage: Build & Dependency Resolution ===\nOutcome: ${STEP_OUTCOME}\nExit Code: ${EXIT_CODE}\nInstalled: $(pip list --format=freeze | grep -E 'pytest')\n"
           HTTP_STATUS=$(curl -s -o /tmp/resp_50.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
             -H "Content-Type: application/json" \
+            -H "X-API-Key: ${API_KEY}" \
             -d "{\"log_chunk\": \"${LOG_CONTENT}\", \"step_name\": \"Install Dependencies\", \"stage\": \"build\", \"is_final\": false, \"exit_code\": ${EXIT_CODE}, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 50}" || echo "FAILED")
           if [ "$HTTP_STATUS" != "200" ]; then
             echo "::warning title=Dashboard Ingestion Warning::Backend unreachable at 50% checkpoint (HTTP ${HTTP_STATUS})."
@@ -86,12 +90,14 @@ jobs:
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
           DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
           GHA_RUN_ID: ${{ github.run_id }}
+          API_KEY: ${{ secrets.DEMO_API_KEY }}
           STEP_OUTCOME: ${{ steps.syntax_check.outcome }}
         run: |
           EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
           LOG_CONTENT="=== Stage: Environment & Static Validation ===\nSyntax Verification: ${STEP_OUTCOME}\nModules: src.config, src.validator, src.processor, src.order_service\n"
           HTTP_STATUS=$(curl -s -o /tmp/resp_75.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
             -H "Content-Type: application/json" \
+            -H "X-API-Key: ${API_KEY}" \
             -d "{\"log_chunk\": \"${LOG_CONTENT}\", \"step_name\": \"Validate Environment\", \"stage\": \"build\", \"is_final\": false, \"exit_code\": ${EXIT_CODE}, \"ci_run_id\": \"${GHA_RUN_ID}\", \"depth\": 75}" || echo "FAILED")
           if [ "$HTTP_STATUS" != "200" ]; then
             echo "::warning title=Dashboard Ingestion Warning::Backend unreachable at 75% checkpoint (HTTP ${HTTP_STATUS})."
@@ -114,6 +120,7 @@ jobs:
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
           DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
           GHA_RUN_ID: ${{ github.run_id }}
+          API_KEY: ${{ secrets.DEMO_API_KEY }}
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
         run: |
           EXIT_CODE=$([ "$TEST_OUTCOME" = "success" ] && echo 0 || echo 1)
@@ -125,6 +132,7 @@ jobs:
           
           HTTP_STATUS=$(curl -s -o /tmp/resp_100.json -w "%{http_code}" -X POST "${BACKEND_URL}/api/demo/runs/${DEMO_RUN_ID}/logs" \
             -H "Content-Type: application/json" \
+            -H "X-API-Key: ${API_KEY}" \
             -d "${PAYLOAD}" || echo "FAILED")
 
           if [ "$HTTP_STATUS" != "200" ]; then
