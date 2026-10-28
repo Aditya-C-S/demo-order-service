@@ -39,6 +39,7 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: |
           mkdir -p /tmp/ci_logs
+          LOG_FILE="/tmp/ci_logs/01_env.log"
           {
             echo "##[group]Runner Environment Initialization"
             echo "OS: $(uname -srmo 2>/dev/null || echo 'Ubuntu Linux')"
@@ -48,29 +49,46 @@ jobs:
             echo "Git Version: $(git --version 2>&1)"
             echo "Commit: ${COMMIT_SHA}"
             echo "Commit Summary: $(git log -1 --oneline 2>/dev/null || echo 'Demo commit')"
+            echo "Workflow Dispatch Run ID: ${DEMO_RUN_ID}"
             echo "##[endgroup]"
-          } | tee /tmp/ci_logs/01_env.log
+          } 2>&1 | tee "$LOG_FILE"
 
           python3 scripts/report_checkpoint.py \
             --depth 25 \
             --step-name "Runner Environment Initialization" \
             --stage "setup" \
+            --step-outcome "success" \
             --exit-code 0 \
-            --log-file /tmp/ci_logs/01_env.log
+            --log-file "$LOG_FILE"
 
       - name: 4. Install Dependencies
         id: install_step
         run: |
           mkdir -p /tmp/ci_logs
-          {
-            echo "=== Stage: Dependency Installation & Package Resolution ==="
-            python -m pip install --upgrade pip
-            pip install -r requirements.txt
-            echo "Installed packages summary:"
-            pip list --format=freeze | grep -E 'pytest|pydantic|requests|fastapi' || pip list --format=freeze | head -n 10
-            echo "Process completed successfully."
-          } 2>&1 | tee /tmp/ci_logs/02_install.log
-          exit ${PIPESTATUS[0]}
+          LOG_FILE="/tmp/ci_logs/02_install.log"
+          rm -f "$LOG_FILE"
+
+          echo "=== Stage: Dependency Installation & Package Resolution ===" | tee -a "$LOG_FILE"
+
+          echo "--- [1/2] Upgrading pip ---" | tee -a "$LOG_FILE"
+          python -m pip install --upgrade pip 2>&1 | tee -a "$LOG_FILE"
+          PIP_UPGRADE_EC=${PIPESTATUS[0]}
+          if [ $PIP_UPGRADE_EC -ne 0 ]; then
+            echo "##[error] Pip upgrade failed with exit code $PIP_UPGRADE_EC" | tee -a "$LOG_FILE"
+            exit $PIP_UPGRADE_EC
+          fi
+
+          echo "--- [2/2] Installing dependencies from requirements.txt ---" | tee -a "$LOG_FILE"
+          pip install -r requirements.txt 2>&1 | tee -a "$LOG_FILE"
+          PIP_INSTALL_EC=${PIPESTATUS[0]}
+          if [ $PIP_INSTALL_EC -ne 0 ]; then
+            echo "##[error] Requirements installation failed with exit code $PIP_INSTALL_EC" | tee -a "$LOG_FILE"
+            exit $PIP_INSTALL_EC
+          fi
+
+          echo "--- Installed packages summary ---" | tee -a "$LOG_FILE"
+          pip list --format=freeze | grep -E 'pytest|pydantic|requests|fastapi' | tee -a "$LOG_FILE" || pip list --format=freeze | head -n 10 | tee -a "$LOG_FILE"
+          echo "Dependency installation completed successfully." | tee -a "$LOG_FILE"
 
       - name: 5. Stream Checkpoint 50% (Dependency Resolution Logs)
         if: always()
@@ -79,14 +97,23 @@ jobs:
           DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
           GHA_RUN_ID: ${{ github.run_id }}
           API_KEY: ${{ secrets.DEMO_API_KEY }}
+          COMMIT_SHA: ${{ github.sha }}
           STEP_OUTCOME: ${{ steps.install_step.outcome }}
         run: |
-          EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
+          if [ "$STEP_OUTCOME" = "success" ]; then
+            EXIT_ARGS="--exit-code 0"
+          elif [ "$STEP_OUTCOME" = "failure" ]; then
+            EXIT_ARGS="--exit-code 1"
+          else
+            EXIT_ARGS=""
+          fi
+
           python3 scripts/report_checkpoint.py \
             --depth 50 \
             --step-name "Install Dependencies" \
             --stage "build" \
-            --exit-code "$EXIT_CODE" \
+            $EXIT_ARGS \
+            --step-outcome "$STEP_OUTCOME" \
             --log-file /tmp/ci_logs/02_install.log \
             --fallback-msg "=== Stage: Dependency Installation === Outcome: ${STEP_OUTCOME}"
 
@@ -94,11 +121,16 @@ jobs:
         id: syntax_check
         run: |
           mkdir -p /tmp/ci_logs
-          {
-            echo "=== Stage: Environment & Static Validation ==="
-            python -c "import src.config, src.exceptions, src.validator, src.processor, src.order_service; print('All core modules imported and syntax verified successfully.')"
-          } 2>&1 | tee /tmp/ci_logs/03_syntax.log
-          exit ${PIPESTATUS[0]}
+          LOG_FILE="/tmp/ci_logs/03_syntax.log"
+          rm -f "$LOG_FILE"
+
+          echo "=== Stage: Environment & Static Validation ===" | tee -a "$LOG_FILE"
+          python -c "import src.config, src.exceptions, src.validator, src.processor, src.order_service; print('All core modules imported and syntax verified successfully.')" 2>&1 | tee -a "$LOG_FILE"
+          SYNTAX_EC=${PIPESTATUS[0]}
+          if [ $SYNTAX_EC -ne 0 ]; then
+            echo "##[error] Static validation and import check failed with exit code $SYNTAX_EC" | tee -a "$LOG_FILE"
+            exit $SYNTAX_EC
+          fi
 
       - name: 7. Stream Checkpoint 75% (Static Validation Logs)
         if: always()
@@ -107,14 +139,23 @@ jobs:
           DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
           GHA_RUN_ID: ${{ github.run_id }}
           API_KEY: ${{ secrets.DEMO_API_KEY }}
+          COMMIT_SHA: ${{ github.sha }}
           STEP_OUTCOME: ${{ steps.syntax_check.outcome }}
         run: |
-          EXIT_CODE=$([ "$STEP_OUTCOME" = "success" ] && echo 0 || echo 1)
+          if [ "$STEP_OUTCOME" = "success" ]; then
+            EXIT_ARGS="--exit-code 0"
+          elif [ "$STEP_OUTCOME" = "failure" ]; then
+            EXIT_ARGS="--exit-code 1"
+          else
+            EXIT_ARGS=""
+          fi
+
           python3 scripts/report_checkpoint.py \
             --depth 75 \
             --step-name "Validate Environment" \
             --stage "build" \
-            --exit-code "$EXIT_CODE" \
+            $EXIT_ARGS \
+            --step-outcome "$STEP_OUTCOME" \
             --log-file /tmp/ci_logs/03_syntax.log \
             --fallback-msg "=== Stage: Static Validation === Outcome: ${STEP_OUTCOME}"
 
@@ -124,8 +165,16 @@ jobs:
           INJECT_DEMO_FAILURE: ${{ inputs.inject_failure || '0' }}
         run: |
           mkdir -p /tmp/ci_logs
-          pytest tests/ -v --tb=short 2>&1 | tee /tmp/ci_logs/04_pytest.log
-          exit ${PIPESTATUS[0]}
+          LOG_FILE="/tmp/ci_logs/04_pytest.log"
+          rm -f "$LOG_FILE"
+
+          echo "=== Stage: Pytest Test Suite Execution ===" | tee -a "$LOG_FILE"
+          pytest tests/ -v --tb=short 2>&1 | tee -a "$LOG_FILE"
+          TEST_EC=${PIPESTATUS[0]}
+          if [ $TEST_EC -ne 0 ]; then
+            echo "##[error] Pytest test suite failed with exit code $TEST_EC" | tee -a "$LOG_FILE"
+            exit $TEST_EC
+          fi
 
       - name: 9. Stream Checkpoint 100% Final & Trigger Parser V2 / RCA
         if: always()
@@ -134,14 +183,34 @@ jobs:
           DEMO_RUN_ID: ${{ inputs.demo_run_id || secrets.DEMO_RUN_ID || 'demo_run_manual' }}
           GHA_RUN_ID: ${{ github.run_id }}
           API_KEY: ${{ secrets.DEMO_API_KEY }}
+          COMMIT_SHA: ${{ github.sha }}
+          INSTALL_OUTCOME: ${{ steps.install_step.outcome }}
+          SYNTAX_OUTCOME: ${{ steps.syntax_check.outcome }}
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
         run: |
-          EXIT_CODE=$([ "$TEST_OUTCOME" = "success" ] && echo 0 || echo 1)
+          if [ "$TEST_OUTCOME" = "success" ]; then
+            EXIT_ARGS="--exit-code 0"
+          elif [ "$TEST_OUTCOME" = "failure" ]; then
+            EXIT_ARGS="--exit-code 1"
+          else
+            EXIT_ARGS=""
+          fi
+
+          if [ "$INSTALL_OUTCOME" = "failure" ] || [ "$SYNTAX_OUTCOME" = "failure" ] || [ "$TEST_OUTCOME" = "failure" ]; then
+            WORKFLOW_OUTCOME="failure"
+          elif [ "$TEST_OUTCOME" = "success" ]; then
+            WORKFLOW_OUTCOME="success"
+          else
+            WORKFLOW_OUTCOME="failure"
+          fi
+
           python3 scripts/report_checkpoint.py \
             --depth 100 \
             --step-name "Run Test Suite" \
             --stage "test" \
-            --exit-code "$EXIT_CODE" \
+            $EXIT_ARGS \
+            --step-outcome "$TEST_OUTCOME" \
+            --workflow-outcome "$WORKFLOW_OUTCOME" \
             --is-final \
             --log-file /tmp/ci_logs/04_pytest.log \
-            --fallback-msg "Pytest execution completed with exit code ${EXIT_CODE}"
+            --fallback-msg "Pytest execution outcome: ${TEST_OUTCOME} (workflow outcome: ${WORKFLOW_OUTCOME})"

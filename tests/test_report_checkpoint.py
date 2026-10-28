@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 from unittest.mock import patch, MagicMock
+import urllib.error
 
 import pytest
 
@@ -42,6 +43,7 @@ def test_report_checkpoint_success_with_complex_log(monkeypatch):
             "--depth", "25",
             "--step-name", "Runner Environment Initialization",
             "--stage", "setup",
+            "--step-outcome", "success",
             "--exit-code", "0",
             "--log-file", temp_log,
         ]
@@ -68,11 +70,13 @@ def test_report_checkpoint_success_with_complex_log(monkeypatch):
         assert body["depth"] == 25
         assert body["step_name"] == "Runner Environment Initialization"
         assert body["stage"] == "setup"
+        assert body["step_outcome"] == "success"
         assert body["exit_code"] == 0
         assert body["ci_run_id"] == "gha_9999"
         assert body["commit_sha"] == "abcdef123456"
         assert body["is_final"] is False
         assert body["log_chunk"] == complex_log
+        assert "timestamp" in body
     finally:
         if os.path.exists(temp_log):
             os.remove(temp_log)
@@ -89,6 +93,7 @@ def test_report_checkpoint_fallback_msg_when_file_missing(monkeypatch):
         "--step-name", "Run Test Suite",
         "--stage", "test",
         "--exit-code", "1",
+        "--step-outcome", "failure",
         "--is-final",
         "--log-file", "/nonexistent/path/missing.log",
         "--fallback-msg", "Pytest execution failed with exit code 1",
@@ -111,4 +116,94 @@ def test_report_checkpoint_fallback_msg_when_file_missing(monkeypatch):
     assert body["depth"] == 100
     assert body["is_final"] is True
     assert body["exit_code"] == 1
+    assert body["step_outcome"] == "failure"
     assert body["log_chunk"] == "Pytest execution failed with exit code 1"
+
+
+def test_report_checkpoint_skipped_step_no_fabricated_exit_code(monkeypatch):
+    """Scenario C/E: Verify skipped steps do not invent fake exit codes (exit_code is None/null)."""
+    monkeypatch.setenv("BACKEND_URL", "http://testserver:8000")
+    monkeypatch.setenv("DEMO_RUN_ID", "run_test_skipped")
+
+    test_args = [
+        "report_checkpoint.py",
+        "--depth", "100",
+        "--step-name", "Run Test Suite",
+        "--stage", "test",
+        "--step-outcome", "skipped",
+        "--workflow-outcome", "failure",
+        "--is-final",
+    ]
+
+    captured_requests = []
+
+    def mock_urlopen(req, timeout=15):
+        captured_requests.append(req)
+        resp = MagicMock()
+        resp.status = 200
+        return resp
+
+    with patch("sys.argv", test_args), patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        main()
+
+    assert len(captured_requests) == 1
+    req = captured_requests[0]
+    body = json.loads(req.data.decode("utf-8"))
+    assert body["depth"] == 100
+    assert body["is_final"] is True
+    assert body["exit_code"] is None  # Authentic None, not fabricated 0 or 1
+    assert body["step_outcome"] == "skipped"
+    assert body["workflow_outcome"] == "failure"
+    assert "skipped due to earlier stage failure" in body["log_chunk"]
+
+
+def test_report_checkpoint_backend_unavailable_resilience(monkeypatch, capsys):
+    """Scenario D: Verify network errors / HTTP 500 do not crash script and do not leak secrets."""
+    monkeypatch.setenv("BACKEND_URL", "http://unreachable-host:8000")
+    monkeypatch.setenv("DEMO_RUN_ID", "run_test_unreachable")
+    monkeypatch.setenv("API_KEY", "super-secret-ci-key-999")
+
+    test_args = [
+        "report_checkpoint.py",
+        "--depth", "50",
+        "--step-name", "Install Dependencies",
+        "--stage", "build",
+        "--step-outcome", "success",
+        "--exit-code", "0",
+    ]
+
+    def mock_urlopen_error(req, timeout=15):
+        raise urllib.error.URLError("Connection refused")
+
+    with patch("sys.argv", test_args), patch("urllib.request.urlopen", side_effect=mock_urlopen_error):
+        # Should not raise exception
+        main()
+
+    captured = capsys.readouterr()
+    # Ensure error is reported clearly on stderr
+    assert "Delivery network error: Connection refused" in captured.err
+    # Ensure secret is NOT printed anywhere
+    assert "super-secret-ci-key-999" not in captured.out
+    assert "super-secret-ci-key-999" not in captured.err
+    # Ensure delivery was not claimed as successful
+    assert "delivered successfully" not in captured.out
+
+
+def test_report_checkpoint_warns_on_localhost_in_github_actions(monkeypatch, capsys):
+    """Verify script warns if GITHUB_ACTIONS is true but BACKEND_URL points to localhost."""
+    monkeypatch.setenv("BACKEND_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    test_args = [
+        "report_checkpoint.py",
+        "--depth", "25",
+        "--step-name", "Runner Environment Initialization",
+        "--stage", "setup",
+        "--exit-code", "0",
+    ]
+
+    with patch("sys.argv", test_args), patch("urllib.request.urlopen"):
+        main()
+
+    captured = capsys.readouterr()
+    assert "WARNING: Running in GitHub Actions runner with local backend URL" in captured.err

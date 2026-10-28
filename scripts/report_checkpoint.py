@@ -1,7 +1,9 @@
 """
 report_checkpoint.py — CLI tool to stream CI/CD checkpoint logs to the FastAPI backend.
+Transmits authentic captured stdout/stderr from GitHub Actions runner to the predictor backend.
 """
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import sys
@@ -11,11 +13,13 @@ import urllib.request
 
 def main():
     parser = argparse.ArgumentParser(description="Report CI/CD checkpoint logs to predictor backend.")
-    parser.add_argument("--depth", type=int, required=True, help="Checkpoint depth percentage (25, 50, 75, 100)")
+    parser.add_argument("--depth", type=int, required=True, choices=[25, 50, 75, 100], help="Checkpoint depth percentage (25, 50, 75, 100)")
     parser.add_argument("--step-name", type=str, required=True, help="Name of the CI step")
     parser.add_argument("--stage", type=str, required=True, choices=["setup", "build", "test"], help="Pipeline stage")
-    parser.add_argument("--exit-code", type=int, default=0, help="Step exit code (0=success, non-zero=failure)")
-    parser.add_argument("--is-final", action="store_true", help="Flag if this is the final checkpoint")
+    parser.add_argument("--exit-code", type=int, default=None, help="Step exit code (0=success, non-zero=failure; omit if unavailable/skipped)")
+    parser.add_argument("--step-outcome", type=str, default=None, choices=["success", "failure", "skipped", "cancelled"], help="GitHub Actions step outcome")
+    parser.add_argument("--workflow-outcome", type=str, default=None, choices=["success", "failure"], help="Overall workflow outcome if known")
+    parser.add_argument("--is-final", action="store_true", help="Flag if this is the final checkpoint (100%)")
     parser.add_argument("--log-file", type=str, default=None, help="Path to raw step log file")
     parser.add_argument("--fallback-msg", type=str, default="", help="Fallback log text if log file is missing or empty")
 
@@ -27,6 +31,16 @@ def main():
     gha_run_id = os.environ.get("GHA_RUN_ID", "")
     api_key = os.environ.get("API_KEY", "")
     commit_sha = os.environ.get("COMMIT_SHA", "")
+
+    # Alert if running on GitHub Actions with localhost backend URL
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        if "127.0.0.1" in backend_url or "localhost" in backend_url:
+            print(
+                f"WARNING: Running in GitHub Actions runner with local backend URL '{backend_url}'. "
+                "If your backend is running on a development machine, ensure secrets.BACKEND_URL is configured "
+                "with your public HTTPS tunnel (e.g. ngrok).",
+                file=sys.stderr,
+            )
 
     # Read authentic log content
     content = ""
@@ -41,18 +55,28 @@ def main():
         content = args.fallback_msg
 
     if not content.strip():
-        content = f"Step '{args.step_name}' completed with exit code {args.exit_code}."
+        if args.step_outcome == "skipped":
+            content = f"=== Step '{args.step_name}' was skipped due to earlier stage failure. ==="
+        elif args.exit_code is not None:
+            content = f"Step '{args.step_name}' completed with exit code {args.exit_code} (outcome: {args.step_outcome or 'unknown'})."
+        else:
+            content = f"Step '{args.step_name}' recorded with outcome: {args.step_outcome or 'unknown'}."
 
-    # Construct payload
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Construct payload preserving authentic values
     payload = {
         "log_chunk": content,
         "step_name": args.step_name,
         "stage": args.stage,
         "is_final": bool(args.is_final),
-        "exit_code": int(args.exit_code),
+        "exit_code": args.exit_code,
+        "step_outcome": args.step_outcome,
+        "workflow_outcome": args.workflow_outcome,
         "ci_run_id": str(gha_run_id) if gha_run_id else None,
         "commit_sha": str(commit_sha) if commit_sha else None,
         "depth": int(args.depth),
+        "timestamp": now_iso,
     }
 
     url = f"{backend_url}/api/demo/runs/{demo_run_id}/logs"
@@ -63,7 +87,7 @@ def main():
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
-    print(f"Reporting Checkpoint {args.depth}% ({args.step_name}) to {url}...")
+    print(f"Reporting Checkpoint {args.depth}% ({args.step_name}) to {url} [run_id: {demo_run_id}, outcome: {args.step_outcome or 'N/A'}]...")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             print(f"Checkpoint {args.depth}% delivered successfully (HTTP {resp.status}).")
