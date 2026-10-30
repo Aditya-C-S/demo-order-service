@@ -207,3 +207,73 @@ def test_report_checkpoint_warns_on_localhost_in_github_actions(monkeypatch, cap
 
     captured = capsys.readouterr()
     assert "WARNING: Running in GitHub Actions runner with local backend URL" in captured.err
+
+
+def test_report_checkpoint_skipped_stage(monkeypatch):
+    """Verify report_checkpoint formats skipped stages properly without exit code."""
+    monkeypatch.setenv("BACKEND_URL", "http://testserver:8000")
+    monkeypatch.setenv("DEMO_RUN_ID", "run_test_skipped")
+
+    test_args = [
+        "report_checkpoint.py",
+        "--depth", "75",
+        "--step-name", "Validate Environment",
+        "--stage", "build",
+        "--step-outcome", "skipped",
+    ]
+
+    captured_requests = []
+
+    def mock_urlopen(req, timeout=15):
+        captured_requests.append(req)
+        resp = MagicMock()
+        resp.status = 200
+        return resp
+
+    with patch("sys.argv", test_args), patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        main()
+
+    assert len(captured_requests) == 1
+    body = json.loads(captured_requests[0].data.decode("utf-8"))
+    assert body["depth"] == 75
+    assert body["step_name"] == "Validate Environment"
+    assert body["step_outcome"] == "skipped"
+    assert body["exit_code"] is None
+    assert "skipped due to earlier stage failure" in body["log_chunk"]
+
+
+def test_report_checkpoint_final_workflow_outcome(monkeypatch):
+    """Verify report_checkpoint 100% final checkpoint sends workflow_outcome and is_final."""
+    monkeypatch.setenv("BACKEND_URL", "http://testserver:8000")
+    monkeypatch.setenv("DEMO_RUN_ID", "run_test_final")
+
+    test_args = [
+        "report_checkpoint.py",
+        "--depth", "100",
+        "--step-name", "Run Test Suite",
+        "--stage", "test",
+        "--step-outcome", "failure",
+        "--workflow-outcome", "failure",
+        "--exit-code", "1",
+        "--is-final",
+        "--fallback-msg", "Pytest execution outcome: failure (workflow outcome: failure)",
+    ]
+
+    captured_requests = []
+
+    def mock_urlopen(req, timeout=15):
+        captured_requests.append(req)
+        resp = MagicMock()
+        resp.status = 200
+        return resp
+
+    with patch("sys.argv", test_args), patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        main()
+
+    assert len(captured_requests) == 1
+    body = json.loads(captured_requests[0].data.decode("utf-8"))
+    assert body["depth"] == 100
+    assert body["step_outcome"] == "failure"
+    assert body["workflow_outcome"] == "failure"
+    assert body["is_final"] is True
+    assert body["exit_code"] == 1

@@ -11,8 +11,18 @@ on:
         description: 'Active Demo Run ID from CI/CD Predictor Dashboard'
         required: false
         default: 'demo_run_manual'
+      failure_stage:
+        description: 'Failure injection stage: none, dependency, syntax, pytest'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - dependency
+          - syntax
+          - pytest
       inject_failure:
-        description: 'Inject controlled validation failure (1=yes, 0=no)'
+        description: 'Legacy switch: Inject controlled validation failure (1=yes, 0=no)'
         required: false
         default: '0'
 
@@ -63,12 +73,22 @@ jobs:
 
       - name: 4. Install Dependencies
         id: install_step
+        env:
+          FAILURE_STAGE: ${{ inputs.failure_stage || 'none' }}
         run: |
           mkdir -p /tmp/ci_logs
           LOG_FILE="/tmp/ci_logs/02_install.log"
           rm -f "$LOG_FILE"
 
           echo "=== Stage: Dependency Installation & Package Resolution ===" | tee -a "$LOG_FILE"
+
+          if [ "$FAILURE_STAGE" = "dependency" ]; then
+            echo "--- [Controlled Demo Injection] Simulating dependency resolution failure ---" | tee -a "$LOG_FILE"
+            pip install --no-cache-dir "demo-unresolved-dependency-pkg==99.99.99" 2>&1 | tee -a "$LOG_FILE"
+            PIP_INSTALL_EC=${PIPESTATUS[0]}
+            echo "##[error] Requirements installation failed with exit code $PIP_INSTALL_EC" | tee -a "$LOG_FILE"
+            exit $PIP_INSTALL_EC
+          fi
 
           echo "--- [1/2] Upgrading pip ---" | tee -a "$LOG_FILE"
           python -m pip install --upgrade pip 2>&1 | tee -a "$LOG_FILE"
@@ -119,12 +139,23 @@ jobs:
 
       - name: 6. Validate Environment & Package Syntax
         id: syntax_check
+        env:
+          FAILURE_STAGE: ${{ inputs.failure_stage || 'none' }}
         run: |
           mkdir -p /tmp/ci_logs
           LOG_FILE="/tmp/ci_logs/03_syntax.log"
           rm -f "$LOG_FILE"
 
           echo "=== Stage: Environment & Static Validation ===" | tee -a "$LOG_FILE"
+
+          if [ "$FAILURE_STAGE" = "syntax" ]; then
+            echo "--- [Controlled Demo Injection] Simulating Python syntax and module validation failure ---" | tee -a "$LOG_FILE"
+            python -c "eval('def invalid_syntax(: pass')" 2>&1 | tee -a "$LOG_FILE"
+            SYNTAX_EC=${PIPESTATUS[0]}
+            echo "##[error] Static validation and import check failed with exit code $SYNTAX_EC" | tee -a "$LOG_FILE"
+            exit $SYNTAX_EC
+          fi
+
           python -c "import src.config, src.exceptions, src.validator, src.processor, src.order_service; print('All core modules imported and syntax verified successfully.')" 2>&1 | tee -a "$LOG_FILE"
           SYNTAX_EC=${PIPESTATUS[0]}
           if [ $SYNTAX_EC -ne 0 ]; then
@@ -162,13 +193,22 @@ jobs:
       - name: 8. Execute Pytest Test Suite
         id: run_tests
         env:
-          INJECT_DEMO_FAILURE: ${{ inputs.inject_failure || '0' }}
+          FAILURE_STAGE: ${{ inputs.failure_stage || 'none' }}
+          INJECT_FAILURE_INPUT: ${{ inputs.inject_failure || '0' }}
         run: |
           mkdir -p /tmp/ci_logs
           LOG_FILE="/tmp/ci_logs/04_pytest.log"
           rm -f "$LOG_FILE"
 
           echo "=== Stage: Pytest Test Suite Execution ===" | tee -a "$LOG_FILE"
+
+          if [ "$FAILURE_STAGE" = "pytest" ] || [ "$INJECT_FAILURE_INPUT" = "1" ]; then
+            export INJECT_DEMO_FAILURE=1
+            echo "--- [Controlled Demo Injection] INJECT_DEMO_FAILURE=1 active for pytest ---" | tee -a "$LOG_FILE"
+          else
+            export INJECT_DEMO_FAILURE=0
+          fi
+
           pytest tests/ -v --tb=short 2>&1 | tee -a "$LOG_FILE"
           TEST_EC=${PIPESTATUS[0]}
           if [ $TEST_EC -ne 0 ]; then
