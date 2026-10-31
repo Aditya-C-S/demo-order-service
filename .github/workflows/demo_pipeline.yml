@@ -87,6 +87,16 @@ jobs:
             pip install --no-cache-dir "demo-unresolved-dependency-pkg==99.99.99" 2>&1 | tee -a "$LOG_FILE"
             PIP_INSTALL_EC=${PIPESTATUS[0]}
             echo "##[error] Requirements installation failed with exit code $PIP_INSTALL_EC" | tee -a "$LOG_FILE"
+
+            # Stream in-flight early failure telemetry BEFORE final command exit
+            python3 scripts/report_checkpoint.py \
+              --depth 50 \
+              --step-name "Install Dependencies (In-Flight Telemetry)" \
+              --stage "build" \
+              --step-outcome "running" \
+              --log-file "$LOG_FILE" || true
+
+            sleep 2
             exit $PIP_INSTALL_EC
           fi
 
@@ -153,6 +163,16 @@ jobs:
             python -c "eval('def invalid_syntax(: pass')" 2>&1 | tee -a "$LOG_FILE"
             SYNTAX_EC=${PIPESTATUS[0]}
             echo "##[error] Static validation and import check failed with exit code $SYNTAX_EC" | tee -a "$LOG_FILE"
+
+            # Stream in-flight early failure telemetry BEFORE final command exit
+            python3 scripts/report_checkpoint.py \
+              --depth 75 \
+              --step-name "Validate Environment (In-Flight Telemetry)" \
+              --stage "build" \
+              --step-outcome "running" \
+              --log-file "$LOG_FILE" || true
+
+            sleep 2
             exit $SYNTAX_EC
           fi
 
@@ -213,6 +233,16 @@ jobs:
           TEST_EC=${PIPESTATUS[0]}
           if [ $TEST_EC -ne 0 ]; then
             echo "##[error] Pytest test suite failed with exit code $TEST_EC" | tee -a "$LOG_FILE"
+
+            # Stream in-flight early failure telemetry BEFORE final command exit
+            python3 scripts/report_checkpoint.py \
+              --depth 100 \
+              --step-name "Execute Pytest (In-Flight Telemetry)" \
+              --stage "test" \
+              --step-outcome "running" \
+              --log-file "$LOG_FILE" || true
+
+            sleep 2
             exit $TEST_EC
           fi
 

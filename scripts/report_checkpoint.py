@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -17,7 +18,7 @@ def main():
     parser.add_argument("--step-name", type=str, required=True, help="Name of the CI step")
     parser.add_argument("--stage", type=str, required=True, choices=["setup", "build", "test"], help="Pipeline stage")
     parser.add_argument("--exit-code", type=int, default=None, help="Step exit code (0=success, non-zero=failure; omit if unavailable/skipped)")
-    parser.add_argument("--step-outcome", type=str, default=None, choices=["success", "failure", "skipped", "cancelled"], help="GitHub Actions step outcome")
+    parser.add_argument("--step-outcome", type=str, default=None, choices=["success", "failure", "skipped", "cancelled", "running"], help="GitHub Actions step outcome")
     parser.add_argument("--workflow-outcome", type=str, default=None, choices=["success", "failure"], help="Overall workflow outcome if known")
     parser.add_argument("--is-final", action="store_true", help="Flag if this is the final checkpoint (100%)")
     parser.add_argument("--log-file", type=str, default=None, help="Path to raw step log file")
@@ -63,9 +64,11 @@ def main():
             content = f"Step '{args.step_name}' recorded with outcome: {args.step_outcome or 'unknown'}."
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    telemetry_event_id = f"chk_{demo_run_id}_{int(args.depth)}_{int(time.time()*1000)}"
 
     # Construct payload preserving authentic values
     payload = {
+        "event_id": telemetry_event_id,
         "log_chunk": content,
         "step_name": args.step_name,
         "stage": args.stage,
@@ -85,16 +88,29 @@ def main():
         headers["X-API-Key"] = api_key
 
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     print(f"Reporting Checkpoint {args.depth}% ({args.step_name}) to {url} [run_id: {demo_run_id}, outcome: {args.step_outcome or 'N/A'}]...")
     try:
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=15) as resp:
             print(f"Checkpoint {args.depth}% delivered successfully (HTTP {resp.status}).")
     except urllib.error.HTTPError as e:
         print(f"Delivery HTTP error {e.code}: {e.reason}", file=sys.stderr)
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            pass
+        if e.code == 404:
+            print(f"Hint: Run ID '{demo_run_id}' was not found on backend. Ensure DEMO_RUN_ID matches the active run in the dashboard.", file=sys.stderr)
+        elif e.code == 401:
+            print("Hint: Unauthorized. Ensure DEMO_API_KEY secret matches the backend DEMO_API_KEY.", file=sys.stderr)
+        if body:
+            print(f"Server response: {body}", file=sys.stderr)
     except urllib.error.URLError as e:
         print(f"Delivery network error: {e.reason}", file=sys.stderr)
+        if "127.0.0.1" in backend_url or "localhost" in backend_url:
+            print("Hint: Backend URL is localhost. Update secrets.BACKEND_URL with your public tunnel URL (e.g. ngrok).", file=sys.stderr)
     except Exception as e:
         print(f"Delivery exception: {e}", file=sys.stderr)
 
