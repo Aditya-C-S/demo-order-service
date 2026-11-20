@@ -141,13 +141,14 @@ def main():
     parser.add_argument("--step-outcome", type=str, default=None, choices=["success", "failure", "skipped", "cancelled", "running"], help="Step outcome")
     parser.add_argument("--workflow-outcome", type=str, default=None, choices=["success", "failure"], help="Overall workflow outcome")
     parser.add_argument("--is-final", action="store_true", help="Flag if this is the final checkpoint (100%)")
+    parser.add_argument("--api-key", type=str, default="", help="API key for authentication")
     parser.add_argument("--log-file", type=str, default=None, help="Path to raw step log file")
     parser.add_argument("--fallback-msg", type=str, default="", help="Fallback log text if log file is missing or empty")
 
     args = parser.parse_args()
 
     backend_url = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-    api_key = os.environ.get("API_KEY") or os.environ.get("DEMO_API_KEY", "")
+    api_key = args.api_key or os.environ.get("API_KEY") or os.environ.get("DEMO_API_KEY", "")
     commit_sha = os.environ.get("COMMIT_SHA") or os.environ.get("GITHUB_SHA", "")
     gha_run_id = os.environ.get("GHA_RUN_ID") or os.environ.get("GITHUB_RUN_ID", "")
     branch = os.environ.get("BRANCH") or os.environ.get("GITHUB_REF_NAME", "main")
