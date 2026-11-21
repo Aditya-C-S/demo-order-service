@@ -12,7 +12,7 @@ on:
         required: false
         default: 'demo_run_manual'
       failure_stage:
-        description: 'Failure injection stage: none, dependency, syntax, pytest'
+        description: 'Failure injection stage: none, dependency, syntax, processing, pytest'
         required: false
         default: 'none'
         type: choice
@@ -20,6 +20,7 @@ on:
           - none
           - dependency
           - syntax
+          - processing
           - pytest
       inject_failure:
         description: 'Legacy switch: Inject controlled validation failure (1=yes, 0=no)'
@@ -87,6 +88,7 @@ jobs:
 
           python3 scripts/report_checkpoint.py \
             --depth 25 \
+            --is-milestone \
             --step-name "Runner Environment Initialization" \
             --stage "setup" \
             --step-outcome "success" \
@@ -109,16 +111,6 @@ jobs:
             pip install --no-cache-dir "demo-unresolved-dependency-pkg==99.99.99" 2>&1 | tee -a "$LOG_FILE"
             PIP_INSTALL_EC=${PIPESTATUS[0]}
             echo "##[error] Requirements installation failed with exit code $PIP_INSTALL_EC" | tee -a "$LOG_FILE"
-
-            # Stream in-flight early failure telemetry BEFORE final command exit
-            python3 scripts/report_checkpoint.py \
-              --depth 50 \
-              --step-name "Install Dependencies (In-Flight Telemetry)" \
-              --stage "build" \
-              --step-outcome "running" \
-              --log-file "$LOG_FILE" || true
-
-            sleep 2
             exit $PIP_INSTALL_EC
           fi
 
@@ -142,7 +134,7 @@ jobs:
           pip list --format=freeze | grep -E 'pytest|pydantic|requests|fastapi' | tee -a "$LOG_FILE" || pip list --format=freeze | head -n 10 | tee -a "$LOG_FILE"
           echo "Dependency installation completed successfully." | tee -a "$LOG_FILE"
 
-      - name: 5. Stream Checkpoint 50% (Dependency Resolution Logs)
+      - name: 5. Stream Checkpoint 50% (Dependency Resolution Milestone)
         if: always()
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
@@ -162,6 +154,7 @@ jobs:
 
           python3 scripts/report_checkpoint.py \
             --depth 50 \
+            --is-milestone \
             --step-name "Install Dependencies" \
             --stage "build" \
             $EXIT_ARGS \
@@ -169,43 +162,25 @@ jobs:
             --log-file /tmp/ci_logs/02_install.log \
             --fallback-msg "=== Stage: Dependency Installation === Outcome: ${STEP_OUTCOME}"
 
-      - name: 6. Validate Environment & Package Syntax
-        id: syntax_check
+      - name: 6. Continuous Order Batch Processing (Real-Time 35s Streaming)
+        id: process_orders
+        if: steps.install_step.outcome == 'success'
         env:
           FAILURE_STAGE: ${{ inputs.failure_stage || 'none' }}
         run: |
-          mkdir -p /tmp/ci_logs
-          LOG_FILE="/tmp/ci_logs/03_syntax.log"
-          rm -f "$LOG_FILE"
-
-          echo "=== Stage: Environment & Static Validation ===" | tee -a "$LOG_FILE"
-
-          if [ "$FAILURE_STAGE" = "syntax" ]; then
-            echo "--- [Controlled Demo Injection] Simulating Python syntax and module validation failure ---" | tee -a "$LOG_FILE"
-            python -c "eval('def invalid_syntax(: pass')" 2>&1 | tee -a "$LOG_FILE"
-            SYNTAX_EC=${PIPESTATUS[0]}
-            echo "##[error] Static validation and import check failed with exit code $SYNTAX_EC" | tee -a "$LOG_FILE"
-
-            # Stream in-flight early failure telemetry BEFORE final command exit
-            python3 scripts/report_checkpoint.py \
-              --depth 75 \
-              --step-name "Validate Environment (In-Flight Telemetry)" \
-              --stage "build" \
-              --step-outcome "running" \
-              --log-file "$LOG_FILE" || true
-
-            sleep 2
-            exit $SYNTAX_EC
+          EXTRA_ARGS=""
+          if [ "$FAILURE_STAGE" = "processing" ] || [ "$FAILURE_STAGE" = "syntax" ]; then
+            EXTRA_ARGS="--fail"
           fi
 
-          python -c "import src.config, src.exceptions, src.validator, src.processor, src.order_service; print('All core modules imported and syntax verified successfully.')" 2>&1 | tee -a "$LOG_FILE"
-          SYNTAX_EC=${PIPESTATUS[0]}
-          if [ $SYNTAX_EC -ne 0 ]; then
-            echo "##[error] Static validation and import check failed with exit code $SYNTAX_EC" | tee -a "$LOG_FILE"
-            exit $SYNTAX_EC
-          fi
+          python3 -u scripts/log_forwarder.py \
+            --step-name "Continuous Order Processing" \
+            --stage "execution" \
+            --max-lines 25 \
+            --max-seconds 3.0 \
+            -- python3 -u scripts/simulate_processing.py $EXTRA_ARGS
 
-      - name: 7. Stream Checkpoint 75% (Static Validation Logs)
+      - name: 7. Stream Checkpoint 75% (Order Processing Milestone)
         if: always()
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'http://127.0.0.1:8000' }}
@@ -213,7 +188,7 @@ jobs:
           GHA_RUN_ID: ${{ github.run_id }}
           API_KEY: ${{ secrets.DEMO_API_KEY }}
           COMMIT_SHA: ${{ github.sha }}
-          STEP_OUTCOME: ${{ steps.syntax_check.outcome }}
+          STEP_OUTCOME: ${{ steps.process_orders.outcome }}
         run: |
           if [ "$STEP_OUTCOME" = "success" ]; then
             EXIT_ARGS="--exit-code 0"
@@ -225,48 +200,32 @@ jobs:
 
           python3 scripts/report_checkpoint.py \
             --depth 75 \
-            --step-name "Validate Environment" \
-            --stage "build" \
+            --is-milestone \
+            --step-name "Order Processing Execution" \
+            --stage "execution" \
             $EXIT_ARGS \
-            --step-outcome "$STEP_OUTCOME" \
-            --log-file /tmp/ci_logs/03_syntax.log \
-            --fallback-msg "=== Stage: Static Validation === Outcome: ${STEP_OUTCOME}"
+            --step-outcome "$STEP_OUTCOME"
 
-      - name: 8. Execute Pytest Test Suite
+      - name: 8. Execute Pytest Test Suite (Continuous Streaming)
         id: run_tests
+        if: steps.process_orders.outcome == 'success'
         env:
           FAILURE_STAGE: ${{ inputs.failure_stage || 'none' }}
           INJECT_FAILURE_INPUT: ${{ inputs.inject_failure || '0' }}
         run: |
-          mkdir -p /tmp/ci_logs
-          LOG_FILE="/tmp/ci_logs/04_pytest.log"
-          rm -f "$LOG_FILE"
-
-          echo "=== Stage: Pytest Test Suite Execution ===" | tee -a "$LOG_FILE"
-
           if [ "$FAILURE_STAGE" = "pytest" ] || [ "$INJECT_FAILURE_INPUT" = "1" ]; then
             export INJECT_DEMO_FAILURE=1
-            echo "--- [Controlled Demo Injection] INJECT_DEMO_FAILURE=1 active for pytest ---" | tee -a "$LOG_FILE"
+            echo "--- [Controlled Demo Injection] INJECT_DEMO_FAILURE=1 active for pytest ---"
           else
             export INJECT_DEMO_FAILURE=0
           fi
 
-          pytest tests/ -v --tb=short 2>&1 | tee -a "$LOG_FILE"
-          TEST_EC=${PIPESTATUS[0]}
-          if [ $TEST_EC -ne 0 ]; then
-            echo "##[error] Pytest test suite failed with exit code $TEST_EC" | tee -a "$LOG_FILE"
-
-            # Stream in-flight early failure telemetry BEFORE final command exit
-            python3 scripts/report_checkpoint.py \
-              --depth 100 \
-              --step-name "Execute Pytest (In-Flight Telemetry)" \
-              --stage "test" \
-              --step-outcome "running" \
-              --log-file "$LOG_FILE" || true
-
-            sleep 2
-            exit $TEST_EC
-          fi
+          python3 -u scripts/log_forwarder.py \
+            --step-name "Pytest Test Suite" \
+            --stage "test" \
+            --max-lines 25 \
+            --max-seconds 3.0 \
+            -- pytest tests/ -v --tb=short
 
       - name: 9. Stream Checkpoint 100% Final & Trigger Parser V2 / RCA
         if: always()
@@ -277,7 +236,7 @@ jobs:
           API_KEY: ${{ secrets.DEMO_API_KEY }}
           COMMIT_SHA: ${{ github.sha }}
           INSTALL_OUTCOME: ${{ steps.install_step.outcome }}
-          SYNTAX_OUTCOME: ${{ steps.syntax_check.outcome }}
+          PROCESS_OUTCOME: ${{ steps.process_orders.outcome }}
           TEST_OUTCOME: ${{ steps.run_tests.outcome }}
         run: |
           if [ "$TEST_OUTCOME" = "success" ]; then
@@ -288,7 +247,7 @@ jobs:
             EXIT_ARGS=""
           fi
 
-          if [ "$INSTALL_OUTCOME" = "failure" ] || [ "$SYNTAX_OUTCOME" = "failure" ] || [ "$TEST_OUTCOME" = "failure" ]; then
+          if [ "$INSTALL_OUTCOME" = "failure" ] || [ "$PROCESS_OUTCOME" = "failure" ] || [ "$TEST_OUTCOME" = "failure" ]; then
             WORKFLOW_OUTCOME="failure"
           elif [ "$TEST_OUTCOME" = "success" ]; then
             WORKFLOW_OUTCOME="success"
@@ -298,11 +257,10 @@ jobs:
 
           python3 scripts/report_checkpoint.py \
             --depth 100 \
-            --step-name "Run Test Suite" \
+            --is-milestone \
+            --is-final \
+            --step-name "Pipeline Finalization" \
             --stage "test" \
             $EXIT_ARGS \
             --step-outcome "$TEST_OUTCOME" \
-            --workflow-outcome "$WORKFLOW_OUTCOME" \
-            --is-final \
-            --log-file /tmp/ci_logs/04_pytest.log \
-            --fallback-msg "Pytest execution outcome: ${TEST_OUTCOME} (workflow outcome: ${WORKFLOW_OUTCOME})"
+            --workflow-outcome "$WORKFLOW_OUTCOME"

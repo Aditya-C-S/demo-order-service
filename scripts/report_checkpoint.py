@@ -141,6 +141,7 @@ def main():
     parser.add_argument("--step-outcome", type=str, default=None, choices=["success", "failure", "skipped", "cancelled", "running"], help="Step outcome")
     parser.add_argument("--workflow-outcome", type=str, default=None, choices=["success", "failure"], help="Overall workflow outcome")
     parser.add_argument("--is-final", action="store_true", help="Flag if this is the final checkpoint (100%)")
+    parser.add_argument("--is-milestone", action="store_true", help="Flag if this event is an explicit milestone marker (25%, 50%, 75%, 100%)")
     parser.add_argument("--api-key", type=str, default="", help="API key for authentication")
     parser.add_argument("--log-file", type=str, default=None, help="Path to raw step log file")
     parser.add_argument("--fallback-msg", type=str, default="", help="Fallback log text if log file is missing or empty")
@@ -202,7 +203,7 @@ def main():
     if not content.strip() and args.fallback_msg:
         content = args.fallback_msg
 
-    if not content.strip():
+    if not content.strip() and not args.is_milestone:
         if args.step_outcome == "skipped":
             content = f"=== Step '{args.step_name}' was skipped due to earlier stage failure. ==="
         elif args.exit_code is not None:
@@ -216,6 +217,7 @@ def main():
     payload = {
         "event_id": telemetry_event_id,
         "log_chunk": content,
+        "is_milestone": bool(args.is_milestone),
         "step_name": args.step_name,
         "stage": args.stage,
         "is_final": bool(args.is_final),
